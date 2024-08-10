@@ -3,6 +3,7 @@ const express = require('express');
 const Web3 = require('web3');
 const cors = require('cors');
 const fetch = require('node-fetch');
+const axios = require('axios');
 
 const app = express();
 const port = 8080;
@@ -14,57 +15,32 @@ const providerURL = `https://eth-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_
 const provider = new Web3.providers.http.HttpProvider(providerURL);
 const web3 = new Web3.Web3(provider);
 
+const ZERO_X_API_URL = 'https://api.0x.org/swap/v1';
+
 app.get('/', (req, res) => {
   res.send('DEX Backend');
 });
 
 const getEthereumTokens = async () => {
-  const url = `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&category=ethereum-ecosystem&x_cg_demo_api_key=${process.env.COINGECKO_API_KEY}`;
-
   try {
-    const response = await fetch(url);
-    const data = await response.json();
+    const response = await fetch('https://tokens.coingecko.com/uniswap/all.json');
+    let tokenListJSON = await response.json();
+    tokens = tokenListJSON.tokens;
+    console.log("tokens:", tokens);
 
-    if (Array.isArray(data)) {
-      return data.map(token => ({
-        symbol: token.symbol.toUpperCase(),
+    if (Array.isArray(tokens)) {
+      return tokens.map(token => ({
+        symbol: token.symbol,
         name: token.name,
-        icon: token.image
+        decimals:token.decimals,
+        icon: token.logoURI,
+        tokenAddress: token.address
       }));
     } else {
       throw new Error('Failed to retrieve tokens from CoinGecko');
     }
   } catch (error) {
     console.error('Error fetching Ethereum tokens:', error);
-    throw error;
-  }
-};
-
-const getEthereumTokenAddresses = async () => {
-  const url = 'https://api.coingecko.com/api/v3/coins/list?include_platform=true';
-
-  try {
-    const response = await fetch(url, {
-      headers: {
-        'accept': 'application/json',
-        'x-cg-demo-api-key': process.env.COINGECKO_API_KEY
-      }
-    });
-    const data = await response.json();
-
-    if (Array.isArray(data)) {
-      return data
-        .filter(token => token.platforms && token.platforms.ethereum)
-        .map(token => ({
-          symbol: token.symbol.toUpperCase(),
-          name: token.name,
-          address: token.platforms.ethereum
-        }));
-    } else {
-      throw new Error('Failed to retrieve token addresses from CoinGecko');
-    }
-  } catch (error) {
-    console.error('Error fetching Ethereum token addresses:', error);
     throw error;
   }
 };
@@ -116,6 +92,7 @@ const getAllTokensOwned = async (userAddress) => {
             symbol: metadata.result.symbol,
             name: metadata.result.name,
             icon: metadata.result.logo,
+            tokenAddress: token.contractAddress,
             balance: web3.utils.fromWei(token.tokenBalance, 'ether'),
           };
         } else {
@@ -149,25 +126,6 @@ app.post('/user/balances', async (req, res) => {
   }
 });
 
-app.post('/user/balance', async (req, res) => {
-  const { userAddress, coinSymbol } = req.body;
-
-  console.log('Received request for user balance:', { userAddress, coinSymbol });
-
-  try {
-    const tokens = await getEthereumTokenAddresses();
-    const token = tokens.find(t => t.symbol === coinSymbol.toUpperCase());
-    if (!token) {
-      return res.status(404).send({ error: 'Token not found' });
-    }
-
-    const balance = await getTokenBalance(userAddress, token.address);
-    res.send({ tokenAddress: token.address, balance });
-  } catch (error) {
-    res.status(500).send({ error: 'Failed to fetch token balance' });
-  }
-});
-
 app.post('/network/coins', async (req, res) => {
   const { network } = req.body;
 
@@ -177,6 +135,7 @@ app.post('/network/coins', async (req, res) => {
     if (network.toLowerCase() === 'ethereum') {
       console.log('Fetching Ethereum tokens...');
       const coins = await getEthereumTokens();
+
       console.log('Fetched Ethereum tokens:', coins);
       res.send(coins);
     } else {
@@ -195,6 +154,53 @@ app.post('/network/coins', async (req, res) => {
   } catch (error) {
     console.error('Error in /network/coins:', error);
     res.status(500).send({ error: 'fetch failed' });
+  }
+});
+
+app.post('/getPrice', async (req, res) => {
+  const { buyToken, sellToken, sellAmount } = req.body;
+
+  try {
+    const response = await axios.get(`${ZERO_X_API_URL}/price`, {
+      params: {
+        buyToken,
+        sellToken,
+        sellAmount
+      },
+      headers:{
+        '0x-api-key':`${process.env.ZERO_X_API_KEY}`
+      }
+    });
+
+    res.send(response.data);
+  } catch (error) {
+    console.error('Error fetching price:', error);
+    res.status(500).send({ error: 'Failed to fetch price' });
+  }
+});
+
+app.post('/placeOrder', async (req, res) => {
+  const { buyToken, sellToken, sellAmount, takerAddress } = req.body;
+
+  try {
+    const response = await axios.get(`${ZERO_X_API_URL}/quote`, {
+      params: {
+        buyToken,
+        sellToken,
+        sellAmount,
+        takerAddress
+      },
+      headers:{
+        headers:{
+          '0x-api-key':`${process.env.ZERO_X_API_KEY}`
+        }
+      }
+    });
+
+    res.send(response.data);
+  } catch (error) {
+    console.error('Error placing order:', error);
+    res.status(500).send({ error: 'Failed to place order' });
   }
 });
 
